@@ -1,0 +1,289 @@
+---
+title: "Anthropogenic Topo Change"
+author: "Alex Olsen-Mikitowicz"
+date: "9/26/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+# Analyzing topographic change in the USA
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(sf)  #Spatial datasets
+library(mapview) #interactive mapping
+library(raster) #Raster analysis
+library(elevatr) #National Elevation Dataset downloader. 
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## USGS analysis of topographic change
+
+Analysis background can be found here: https://www.usgs.gov/land-resources/eros/topochange
+
+
+### Download the data
+
+
+```{r, eval=F}
+#Create a new folder 
+dir.create('data')
+#Download files
+download.file(url='https://edcintl.cr.usgs.gov/downloads/sciweb1/shared/topo/downloads/Topochange/topo_change_polygons_Shapefile.zip',destfile='data/topo_change.zip')
+# List files in the data directory
+#list.files('data')
+#Unzip the dataset
+unzip('data/topo_change.zip',exdir='data/topo_change')
+#Check that the unzipping worked
+#list.files('data/topo_change')
+```
+
+### Check out the data
+
+```{r}
+topo_change <- st_read('data/topo_change/topo_change_polygons.shp')
+#Checkout the column names
+#names(topo_change)
+biggest_area <- topo_change %>%
+  arrange(desc(AREA_SQ_KM)) %>%
+  slice(1:10)
+# Map all mines
+mapview(biggest_area)
+```
+
+### Checkout mine in Arizona
+
+```{r}
+# Subset to just Arizona
+az_mine <- biggest_area %>%
+  filter(QUADNAME == 'esperanza_mill_AZ')
+#Check that it is the right site
+mapview(az_mine)
+```
+
+
+
+## Getting our own elevation datasets
+
+### Download pre-mining DEM 
+
+```{r}
+#Check projection of az_mine
+#st_crs(az_mine)
+az_raster_before <- get_elev_raster(az_mine,z=12)
+#Look at the structure of the data
+#str(az_raster)
+#Summary of the data
+#summary(az_raster)
+plot(az_raster_before)
+```
+
+
+### Download post-mining DEM
+
+Data comes from [SRTM](https://www2.jpl.nasa.gov/srtm/) 
+
+```{r,eval=F}
+#Extract centroid of mine polygon
+az_center <- st_centroid(az_mine) %>%
+  st_transform(4326)
+#Map it to check
+mapview(az_center)
+st_crs(az_center)
+#Get coords 
+coords <- st_coordinates(az_center)
+getData('SRTM',lon=coords[1],lat=coords[2],
+        path='data',download=TRUE)
+```
+
+
+### Read in SRTM data
+```{r}
+az_raster_after <- raster('data/srtm_14_06.tif')
+```
+
+## Looking at Elevation change before and after mining
+
+### Clip SRTM data to NED data
+
+```{r}
+#Check resolution of rasters
+# res(az_raster_after)
+# res(az_raster_before)
+#Check the projection
+# projection(az_raster_after)
+# projection(az_raster_before)
+#Reproject small raster to larger raster projection
+az_raster_before_reproj <- projectRaster(az_raster_before,
+                                        az_raster_after)
+#Trim whitespace
+az_raster_before_trim <- trim(az_raster_before_reproj) 
+#Crop to match extents
+az_raster_after_clip <- crop(az_raster_after,az_raster_before_trim)
+#Plot clipped dataset
+plot(az_raster_after_clip)
+```
+
+
+### Taking the difference and plotting it
+
+```{r}
+# Take the elevation difference
+dem_diff <- az_raster_before_trim - az_raster_after_clip
+plot(dem_diff)
+```
+
+
+# In-class work
+
+## 1) What is the maximum/minimum elevation change caused by mining?
+
+You may want to check out the command maxValue and minValue
+
+```{r}
+#YOUR CODE HERE
+
+maxValue(dem_diff)
+minValue(dem_diff)
+show(dem_diff)
+
+```
+
+
+## 2) What is the background elevation "error" between NED and SRTM? 
+
+The national elevation dataset (NED) and the Shuttle 
+Radar Topography Mission are extremely different ways to
+estimate elevatin. NED is derived from thousands of 
+compiled elevation datasets that can be collected on the
+ground, from LiDAR or other ways, while SRTM is collected
+with radar from space. As a result, we naturally expect
+there to be some background differences in these 
+two DEMs, so what is the average difference in these DEMs
+in parts of the landscape that have not undergone substantial 
+elevation change? 
+
+### 2a) Buffer the az_mine object by 5 kilometers using the sf::st_buffer command
+
+```{r}
+
+#check units of az_mine
+st_crs(az_mine)$units
+
+az_mine_5km_buff <- st_buffer(az_mine, dist = 5000)
+
+
+```
+
+
+### 2b) Use the the st_transform command to transform the 
+projection of your buffered az_mine dataset to the 
+same projection as the dem_diff raster dataset
+
+hint: you may want to explore st_crs to help you here
+
+```{r}
+
+st_crs(az_mine_5km_buff)
+
+az_mine_4326_5kmbuff <- az_mine_5km_buff %>%
+  st_transform(4326)
+
+
+```
+
+
+### 2c) Use the raster::mask command to mask out all the 
+areas inside of the buffered and reprojected az_mine dataset.
+
+hint: look at the mask command and try to understand what
+the inverse option does
+
+```{r masking raster}
+
+
+mask_az_mine_buff <- mask(dem_diff, az_mine_4326_5kmbuff, inverse=TRUE) %>%
+  plot(mask_az_mine_buff)
+
+
+
+
+```
+
+
+### 2d) Use the summary command to look at the summary of
+differences between these two DEMs in areas where there has
+been no mining
+
+
+```{r}
+
+summary(mask_az_mine_buff)
+summary(dem_diff)
+
+```
+
+
+
+## 3) What does the shape of the "error" distribution look like
+in areas that have not been mined versus areas that have
+been mined? 
+
+To look at distributional changes, we may want to convert this
+raster dataset back into a data.frame or tibble type shape so 
+that we can take advantage of ggplots plotting capabilities and 
+make a plot of the two dems.
+
+### 3a) Mask the raster dem_diff dataset to the exact outlines of the
+USGS az_mine dataset
+
+```{r}
+
+az_mine_epsg4326 <- az_mine %>%
+  st_transform(4326)
+
+
+mask_mine_exact <- mask(dem_diff, az_mine_epsg4326) %>%
+  plot(mask_mine_exact)
+
+
+
+```
+
+
+### 3b) Use the getValues command to extract the elevation
+values from both the unmined and mined regions of your rasters. 
+Label these vectors as `unmined_dem` and `mined_dem`. 
+
+```{r}
+
+
+unmined_dem <- getValues(mask_az_mine_buff)
+
+
+mined_dem <- getValues(mask_mine_exact)
+
+
+```
+
+
+### 3c) Use ggplot and the command geom_density() to look at
+the differences in mined and unmined regions of Arizona.
+
+```{r}
+
+# Here I'm just making the table for you
+unmined_type <- rep('unmined',length(unmined_dem))
+mined_type <- rep('mined',length(mined_dem))
+mined_table <- tibble(dem_values = c(unmined_dem,mined_dem),
+                      type = c(unmined_type,mined_type)) 
+                      
+ggplot(mined_table, aes(dem_values,color = type))+
+  geom_density(na.rm = TRUE)  
+
+#SRTM overestimates elevation
+
+```
